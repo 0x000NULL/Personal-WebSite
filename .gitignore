@@ -1,0 +1,272 @@
+# Planning and Documentation
+todo.md
+portfolio_implementation_plan.md
+
+# Dependencies
+node_modules/
+**/node_modules/
+.pnp
+.pnp.js
+.yarn/install-state.gz
+
+# Testing
+coverage/
+**/coverage/
+.nyc_output
+*.lcov
+
+# Production builds
+build/
+dist/
+**/build/
+**/dist/
+.next/
+**/.next/
+out/
+**/out/
+
+# Misc
+.DS_Store
+*.pem
+Thumbs.db
+
+# Debug logs
+npm-debug.log*
+yarn-debug.log*
+yarn-error.log*
+lerna-debug.log*
+.pnpm-debug.log*
+
+# Environment variables
+.env
+.env*.local
+.env.development
+.env.test
+.env.production
+.env.staging
+**/.env
+**/.env*.local
+
+# IDE - VSCode
+.vscode/*
+!.vscode/settings.json
+!.vscode/tasks.json
+!.vscode/launch.json
+!.vscode/extensions.json
+*.code-workspace
+
+# IDE - IntelliJ IDEA
+.idea/
+*.iml
+*.iws
+*.ipr
+
+# Editor directories and files
+.project
+.classpath
+.c9/
+*.launch
+.settings/
+*.sublime-workspace
+*.swp
+*.swo
+*~
+
+# Python (ML Service)
+__pycache__/
+*.py[cod]
+*$py.class
+*.so
+.Python
+env/
+venv/
+ENV/
+.venv
+pip-log.txt
+pip-delete-this-directory.txt
+.pytest_cache/
+*.egg-info/
+.mypy_cache/
+.dmypy.json
+dmypy.json
+.pyre/
+.pytype/
+.ruff_cache/
+*.ipynb_checkpoints
+
+# ML Models and Data
+*.h5
+*.pkl
+*.joblib
+models/
+data/
+*.csv
+*.parquet
+
+# Terraform
+*.tfstate
+*.tfstate.*
+.terraform/
+*.tfplan
+*.tfvars
+!example.tfvars
+.terraformrc
+terraform.rc
+override.tf
+override.tf.json
+*_override.tf
+*_override.tf.json
+
+# Kubernetes
+kubeconfig
+*.kubeconfig
+secrets.yaml
+*-secrets.yaml
+sealed-secrets.yaml
+
+# Docker
+.dockerignore
+*.dockerfile.swp
+docker-compose.override.yml
+
+# Certificates and Keys
+*.pem
+*.key
+*.crt
+*.cer
+*.p12
+*.pfx
+ssl/
+certs/
+
+# Database
+*.sqlite
+*.sqlite3
+*.db
+postgres-data/
+redis-data/
+
+# Logs
+logs/
+*.log
+logs.txt
+error.log
+access.log
+
+# OS generated files
+.DS_Store
+.DS_Store?
+._*
+.Spotlight-V100
+.Trashes
+ehthumbs.db
+Thumbs.db
+desktop.ini
+
+# Temporary files
+*.tmp
+*.temp
+.tmp/
+.temp/
+tmp/
+temp/
+
+# Cache directories
+.cache/
+.parcel-cache/
+.eslintcache
+.stylelintcache
+*.tsbuildinfo
+
+# Sentry
+.sentryclirc
+
+# Analytics
+analytics-data/
+ga-data/
+
+# Uploads
+uploads/
+public/uploads/
+
+# Backup files
+*.bak
+*.backup
+backup/
+
+# Lock files (keep package-lock.json)
+yarn.lock
+pnpm-lock.yaml
+
+# Monitoring
+prometheus-data/
+grafana-data/
+
+# Session store
+sessions/
+.sessions/
+
+# Generated files
+generated/
+.generated/
+
+# Storybook
+storybook-static/
+.storybook-cache/
+
+# Next.js specific
+.next/
+out/
+.vercel
+
+# PWA files
+public/sw.js
+public/workbox-*.js
+public/worker-*.js
+public/sw.js.map
+public/workbox-*.js.map
+public/worker-*.js.map
+
+# MacOS
+.DS_Store
+.AppleDouble
+.LSOverride
+
+# Windows
+Thumbs.db
+ehthumbs.db
+Desktop.ini
+
+# Linux
+*~
+.directory
+
+# JetBrains
+.idea/
+
+# Visual Studio
+.vs/
+*.suo
+*.user
+*.userosscache
+*.sln.docstates
+
+# Cypress
+cypress/videos/
+cypress/screenshots/
+cypress/downloads/
+
+# Chromatic
+build-storybook.log
+
+# Lighthouse CI
+.lighthouseci/
+
+# k6 Load Testing
+k6-results/
+*.har
+
+# Security scanning
+security-reports/
+vulnerability-reports/
+owasp-reports/
