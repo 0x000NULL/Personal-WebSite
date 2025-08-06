@@ -29,6 +29,7 @@ out/
 .DS_Store
 *.pem
 Thumbs.db
+.claude
 
 # Debug logs
 npm-debug.log*

@@ -1,0 +1,43 @@
+# DigitalOcean API Token
+# Get from: https://cloud.digitalocean.com/account/api/tokens
+do_token = "your-digitalocean-api-token"
+
+# Region configuration
+region = "nyc3"  # Options: nyc1, nyc3, sfo3, ams3, sgp1, lon1, fra1, tor1, blr1
+
+# Environment
+environment = "production"
+
+# Project name
+project_name = "portfolio"
+
+# Kubernetes configuration
+k8s_version            = "1.29.1-do.0"  # Check latest: doctl kubernetes options versions
+node_pool_size         = 3
+node_pool_droplet_size = "s-2vcpu-4gb"  # $48/month per node
+node_pool_min_nodes    = 3
+node_pool_max_nodes    = 5
+
+# Database configuration
+db_size         = "db-s-1vcpu-1gb"  # $15/month
+db_node_count   = 1
+postgres_version = "15"
+
+# Redis configuration
+redis_size       = "db-s-1vcpu-1gb"  # $15/month
+redis_node_count = 1
+redis_version    = "7"
+
+# Container Registry
+registry_subscription_tier = "basic"  # $5/month, 5 repositories, 5GB storage
+
+# Monitoring
+enable_monitoring = true
+
+# Tags
+common_tags = {
+  Project     = "portfolio"
+  ManagedBy   = "terraform"
+  Environment = "production"
+  Owner       = "your-name"
+}

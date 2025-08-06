@@ -1,0 +1,522 @@
+name: Deploy - Build & Deploy to Kubernetes
+
+on:
+  push:
+    branches: [main, develop]
+    paths:
+      - 'apps/**'
+      - 'packages/**'
+      - 'infrastructure/helm-charts/**'
+      - 'package.json'
+      - 'turbo.json'
+      - '.github/workflows/deploy.yml'
+  workflow_dispatch:
+    inputs:
+      environment:
+        description: 'Environment to deploy to'
+        required: true
+        default: 'staging'
+        type: choice
+        options:
+          - staging
+          - production
+      services:
+        description: 'Services to deploy (comma-separated, or "all")'
+        required: false
+        default: 'all'
+        type: string
+
+# Prevent concurrent deployments to the same environment
+concurrency:
+  group: deploy-${{ github.ref == 'refs/heads/main' && 'production' || 'staging' }}
+  cancel-in-progress: false
+
+env:
+  NODE_VERSION: '18'
+  REGISTRY: registry.digitalocean.com
+  REGISTRY_NAMESPACE: ${{ vars.DO_REGISTRY_NAMESPACE }}
+
+jobs:
+  # Job 1: Determine deployment configuration
+  setup:
+    name: Setup Deployment
+    runs-on: ubuntu-latest
+    outputs:
+      environment: ${{ steps.config.outputs.environment }}
+      services: ${{ steps.config.outputs.services }}
+      deploy_frontend: ${{ steps.config.outputs.deploy_frontend }}
+      deploy_backend_api: ${{ steps.config.outputs.deploy_backend_api }}
+      deploy_websocket_server: ${{ steps.config.outputs.deploy_websocket_server }}
+      deploy_ml_service: ${{ steps.config.outputs.deploy_ml_service }}
+      image_tag: ${{ steps.config.outputs.image_tag }}
+      
+    steps:
+      - name: Determine deployment configuration
+        id: config
+        run: |
+          # Determine environment
+          if [[ "${{ github.event_name }}" == "workflow_dispatch" ]]; then
+            ENVIRONMENT="${{ github.event.inputs.environment }}"
+          elif [[ "${{ github.ref }}" == "refs/heads/main" ]]; then
+            ENVIRONMENT="production"
+          else
+            ENVIRONMENT="staging"
+          fi
+          
+          echo "environment=$ENVIRONMENT" >> $GITHUB_OUTPUT
+          
+          # Determine services to deploy
+          if [[ "${{ github.event_name }}" == "workflow_dispatch" && "${{ github.event.inputs.services }}" != "all" ]]; then
+            SERVICES="${{ github.event.inputs.services }}"
+          else
+            SERVICES="frontend,backend-api,websocket-server,ml-service"
+          fi
+          
+          echo "services=$SERVICES" >> $GITHUB_OUTPUT
+          
+          # Set individual service flags
+          if [[ "$SERVICES" == *"frontend"* || "$SERVICES" == "all" ]]; then
+            echo "deploy_frontend=true" >> $GITHUB_OUTPUT
+          else
+            echo "deploy_frontend=false" >> $GITHUB_OUTPUT
+          fi
+          
+          if [[ "$SERVICES" == *"backend-api"* || "$SERVICES" == "all" ]]; then
+            echo "deploy_backend_api=true" >> $GITHUB_OUTPUT
+          else
+            echo "deploy_backend_api=false" >> $GITHUB_OUTPUT
+          fi
+          
+          if [[ "$SERVICES" == *"websocket-server"* || "$SERVICES" == "all" ]]; then
+            echo "deploy_websocket_server=true" >> $GITHUB_OUTPUT
+          else
+            echo "deploy_websocket_server=false" >> $GITHUB_OUTPUT
+          fi
+          
+          if [[ "$SERVICES" == *"ml-service"* || "$SERVICES" == "all" ]]; then
+            echo "deploy_ml_service=true" >> $GITHUB_OUTPUT
+          else
+            echo "deploy_ml_service=false" >> $GITHUB_OUTPUT
+          fi
+          
+          # Generate image tag
+          IMAGE_TAG="${GITHUB_SHA:0:8}-$(date +%s)"
+          echo "image_tag=$IMAGE_TAG" >> $GITHUB_OUTPUT
+          
+          echo "🚀 Deploying to: $ENVIRONMENT"
+          echo "📦 Services: $SERVICES"
+          echo "🏷️ Image tag: $IMAGE_TAG"
+
+  # Job 2: Build and Test
+  build:
+    name: Build & Test
+    runs-on: ubuntu-latest
+    needs: setup
+    timeout-minutes: 20
+    
+    strategy:
+      matrix:
+        service: [frontend, backend-api, websocket-server, ml-service]
+    
+    steps:
+      - name: Checkout code
+        uses: actions/checkout@v4
+        with:
+          fetch-depth: 0
+
+      - name: Setup Node.js
+        uses: actions/setup-node@v4
+        with:
+          node-version: ${{ env.NODE_VERSION }}
+          cache: 'npm'
+
+      - name: Install dependencies
+        run: npm ci
+
+      - name: Run tests for ${{ matrix.service }}
+        run: npm run test -- --filter="@portfolio/${{ matrix.service }}"
+        env:
+          CI: true
+
+      - name: Build ${{ matrix.service }}
+        run: npm run build -- --filter="@portfolio/${{ matrix.service }}"
+
+      - name: Upload build artifacts
+        uses: actions/upload-artifact@v4
+        with:
+          name: build-${{ matrix.service }}
+          path: |
+            apps/${{ matrix.service }}/dist/
+            apps/${{ matrix.service }}/build/
+            apps/${{ matrix.service }}/.next/
+          retention-days: 7
+
+  # Job 3: Build and Push Docker Images
+  docker-build-push:
+    name: Build & Push Docker Images
+    runs-on: ubuntu-latest
+    needs: [setup, build]
+    timeout-minutes: 30
+    
+    strategy:
+      matrix:
+        service: [frontend, backend-api, websocket-server, ml-service]
+    
+    steps:
+      - name: Checkout code
+        uses: actions/checkout@v4
+
+      - name: Set up Docker Buildx
+        uses: docker/setup-buildx-action@v3
+
+      - name: Log in to DigitalOcean Container Registry
+        uses: docker/login-action@v3
+        with:
+          registry: ${{ env.REGISTRY }}
+          username: ${{ secrets.DO_REGISTRY_TOKEN }}
+          password: ${{ secrets.DO_REGISTRY_TOKEN }}
+
+      - name: Download build artifacts
+        uses: actions/download-artifact@v4
+        with:
+          name: build-${{ matrix.service }}
+          path: apps/${{ matrix.service }}/
+
+      - name: Extract metadata
+        id: meta
+        uses: docker/metadata-action@v5
+        with:
+          images: ${{ env.REGISTRY }}/${{ env.REGISTRY_NAMESPACE }}/${{ matrix.service }}
+          tags: |
+            type=raw,value=${{ needs.setup.outputs.image_tag }}
+            type=raw,value=latest,enable={{is_default_branch}}
+            type=ref,event=branch
+            type=sha,prefix={{branch}}-
+
+      - name: Build and push Docker image
+        uses: docker/build-push-action@v5
+        with:
+          context: .
+          file: ./apps/${{ matrix.service }}/Dockerfile
+          push: true
+          tags: ${{ steps.meta.outputs.tags }}
+          labels: ${{ steps.meta.outputs.labels }}
+          cache-from: type=gha
+          cache-to: type=gha,mode=max
+          platforms: linux/amd64
+          build-args: |
+            BUILDKIT_INLINE_CACHE=1
+            SERVICE_NAME=${{ matrix.service }}
+
+  # Job 4: Deploy with Helm
+  deploy:
+    name: Deploy to Kubernetes
+    runs-on: ubuntu-latest
+    needs: [setup, docker-build-push]
+    timeout-minutes: 15
+    environment:
+      name: ${{ needs.setup.outputs.environment }}
+      url: ${{ steps.deploy.outputs.app_url }}
+    
+    strategy:
+      matrix:
+        service: [frontend, backend-api, websocket-server, ml-service]
+    
+    steps:
+      - name: Checkout code
+        uses: actions/checkout@v4
+
+      - name: Setup kubectl
+        uses: azure/setup-kubectl@v3
+        with:
+          version: 'v1.28.0'
+
+      - name: Setup Helm
+        uses: azure/setup-helm@v3
+        with:
+          version: '3.12.0'
+
+      - name: Configure kubectl for DigitalOcean
+        run: |
+          # Create secure temporary kubeconfig
+          KUBECONFIG_FILE=$(mktemp)
+          echo "Using temporary kubeconfig: $KUBECONFIG_FILE"
+          
+          # Decode and write kubeconfig with secure permissions
+          echo "${{ secrets.KUBECONFIG }}" | base64 -d > "$KUBECONFIG_FILE"
+          chmod 600 "$KUBECONFIG_FILE"
+          
+          # Validate kubeconfig format
+          if ! kubectl --kubeconfig="$KUBECONFIG_FILE" config view --minify >/dev/null 2>&1; then
+            echo "❌ Invalid kubeconfig format"
+            rm -f "$KUBECONFIG_FILE"
+            exit 1
+          fi
+          
+          # Export for subsequent steps
+          echo "KUBECONFIG=$KUBECONFIG_FILE" >> $GITHUB_ENV
+          
+          # Set namespace context
+          kubectl config set-context --current --namespace=${{ needs.setup.outputs.environment }}
+
+      - name: Verify cluster connection
+        run: |
+          kubectl cluster-info
+          kubectl get nodes
+
+      - name: Deploy ${{ matrix.service }} with Helm
+        id: deploy
+        run: |
+          RELEASE_NAME="${{ matrix.service }}-${{ needs.setup.outputs.environment }}"
+          CHART_PATH="./infrastructure/helm-charts/${{ matrix.service }}"
+          
+          # Check if this service should be deployed
+          SHOULD_DEPLOY="false"
+          case "${{ matrix.service }}" in
+            "frontend")
+              SHOULD_DEPLOY="${{ needs.setup.outputs.deploy_frontend }}"
+              ;;
+            "backend-api")
+              SHOULD_DEPLOY="${{ needs.setup.outputs.deploy_backend_api }}"
+              ;;
+            "websocket-server")
+              SHOULD_DEPLOY="${{ needs.setup.outputs.deploy_websocket_server }}"
+              ;;
+            "ml-service")
+              SHOULD_DEPLOY="${{ needs.setup.outputs.deploy_ml_service }}"
+              ;;
+          esac
+          
+          if [[ "$SHOULD_DEPLOY" != "true" ]]; then
+            echo "⏭️ Skipping deployment of ${{ matrix.service }}"
+            exit 0
+          fi
+          
+          echo "🚀 Deploying ${{ matrix.service }} to ${{ needs.setup.outputs.environment }}"
+          
+          # Create values override file
+          cat > values-override.yaml << EOF
+          image:
+            repository: ${{ env.REGISTRY }}/${{ env.REGISTRY_NAMESPACE }}/${{ matrix.service }}
+            tag: ${{ needs.setup.outputs.image_tag }}
+            pullPolicy: Always
+          
+          environment: ${{ needs.setup.outputs.environment }}
+          
+          ingress:
+            enabled: true
+            annotations:
+              kubernetes.io/ingress.class: nginx
+              cert-manager.io/cluster-issuer: letsencrypt-prod
+            hosts:
+              - host: ${{ matrix.service }}.${{ needs.setup.outputs.environment }}.${{ vars.DOMAIN_NAME }}
+                paths:
+                  - path: /
+                    pathType: Prefix
+            tls:
+              - secretName: ${{ matrix.service }}-tls
+                hosts:
+                  - ${{ matrix.service }}.${{ needs.setup.outputs.environment }}.${{ vars.DOMAIN_NAME }}
+          
+          resources:
+            limits:
+              cpu: ${{ vars[format('CPU_LIMIT_{0}_{1}', matrix.service, needs.setup.outputs.environment)] || '500m' }}
+              memory: ${{ vars[format('MEMORY_LIMIT_{0}_{1}', matrix.service, needs.setup.outputs.environment)] || '512Mi' }}
+            requests:
+              cpu: ${{ vars[format('CPU_REQUEST_{0}_{1}', matrix.service, needs.setup.outputs.environment)] || '100m' }}
+              memory: ${{ vars[format('MEMORY_REQUEST_{0}_{1}', matrix.service, needs.setup.outputs.environment)] || '128Mi' }}
+          
+          replicaCount: ${{ needs.setup.outputs.environment == 'production' && 3 || 1 }}
+          
+          autoscaling:
+            enabled: ${{ needs.setup.outputs.environment == 'production' && 'true' || 'false' }}
+            minReplicas: ${{ needs.setup.outputs.environment == 'production' && 2 || 1 }}
+            maxReplicas: ${{ needs.setup.outputs.environment == 'production' && 10 || 3 }}
+            targetCPUUtilizationPercentage: 70
+          EOF
+          
+          # Deploy or upgrade
+          helm upgrade --install $RELEASE_NAME $CHART_PATH \
+            --namespace ${{ needs.setup.outputs.environment }} \
+            --create-namespace \
+            --values values-override.yaml \
+            --set-string fullnameOverride=$RELEASE_NAME \
+            --timeout 10m \
+            --wait \
+            --atomic
+          
+          # Output app URL
+          APP_URL="https://${{ matrix.service }}.${{ needs.setup.outputs.environment }}.${{ vars.DOMAIN_NAME }}"
+          echo "app_url=$APP_URL" >> $GITHUB_OUTPUT
+          echo "✅ Deployed ${{ matrix.service }} to $APP_URL"
+
+      - name: Verify deployment
+        run: |
+          RELEASE_NAME="${{ matrix.service }}-${{ needs.setup.outputs.environment }}"
+          
+          echo "🔍 Verifying deployment status..."
+          kubectl get pods -l app.kubernetes.io/instance=$RELEASE_NAME -n ${{ needs.setup.outputs.environment }}
+          
+          echo "🔍 Checking rollout status..."
+          kubectl rollout status deployment/$RELEASE_NAME -n ${{ needs.setup.outputs.environment }} --timeout=300s
+          
+          echo "🔍 Running health check..."
+          kubectl get service $RELEASE_NAME -n ${{ needs.setup.outputs.environment }}
+
+      - name: Cleanup kubeconfig
+        if: always()
+        run: |
+          # Securely remove temporary kubeconfig
+          if [[ -n "$KUBECONFIG" && -f "$KUBECONFIG" ]]; then
+            echo "🧹 Cleaning up temporary kubeconfig: $KUBECONFIG"
+            rm -f "$KUBECONFIG"
+          fi
+
+  # Job 5: Post-deployment verification
+  post-deploy:
+    name: Post-deployment Verification
+    runs-on: ubuntu-latest
+    needs: [setup, deploy]
+    if: always() && needs.deploy.result == 'success'
+    timeout-minutes: 10
+    
+    steps:
+      - name: Wait for services to be ready
+        run: |
+          echo "⏳ Waiting for services to be ready..."
+          sleep 30
+
+      - name: Health check endpoints
+        run: |
+          ENVIRONMENT="${{ needs.setup.outputs.environment }}"
+          DOMAIN="${{ vars.DOMAIN_NAME }}"
+          
+          # Health check function
+          check_endpoint() {
+            local service=$1
+            local endpoint="https://${service}.${ENVIRONMENT}.${DOMAIN}/health"
+            
+            echo "🔍 Checking $service health at $endpoint"
+            
+            for i in {1..5}; do
+              if curl -f -s --max-time 10 "$endpoint" > /dev/null; then
+                echo "✅ $service is healthy"
+                return 0
+              else
+                echo "⏳ $service not ready, attempt $i/5"
+                sleep 10
+              fi
+            done
+            
+            echo "❌ $service health check failed"
+            return 1
+          }
+          
+          # Check each deployed service
+          FAILED_SERVICES=""
+          
+          if [[ "${{ needs.setup.outputs.deploy_frontend }}" == "true" ]]; then
+            check_endpoint "frontend" || FAILED_SERVICES="$FAILED_SERVICES frontend"
+          fi
+          
+          if [[ "${{ needs.setup.outputs.deploy_backend_api }}" == "true" ]]; then
+            check_endpoint "backend-api" || FAILED_SERVICES="$FAILED_SERVICES backend-api"
+          fi
+          
+          if [[ "${{ needs.setup.outputs.deploy_websocket_server }}" == "true" ]]; then
+            check_endpoint "websocket-server" || FAILED_SERVICES="$FAILED_SERVICES websocket-server"
+          fi
+          
+          if [[ "${{ needs.setup.outputs.deploy_ml_service }}" == "true" ]]; then
+            check_endpoint "ml-service" || FAILED_SERVICES="$FAILED_SERVICES ml-service"
+          fi
+          
+          if [[ -n "$FAILED_SERVICES" ]]; then
+            echo "❌ Health checks failed for:$FAILED_SERVICES"
+            exit 1
+          else
+            echo "✅ All deployed services are healthy"
+          fi
+
+  # Job 6: Deployment summary
+  deploy-summary:
+    name: Deployment Summary
+    runs-on: ubuntu-latest
+    needs: [setup, build, docker-build-push, deploy, post-deploy]
+    if: always()
+    
+    steps:
+      - name: Generate deployment summary
+        run: |
+          echo "# 🚀 Deployment Summary" >> $GITHUB_STEP_SUMMARY
+          echo "" >> $GITHUB_STEP_SUMMARY
+          echo "**Environment:** ${{ needs.setup.outputs.environment }}" >> $GITHUB_STEP_SUMMARY
+          echo "**Image Tag:** ${{ needs.setup.outputs.image_tag }}" >> $GITHUB_STEP_SUMMARY
+          echo "**Services:** ${{ needs.setup.outputs.services }}" >> $GITHUB_STEP_SUMMARY
+          echo "" >> $GITHUB_STEP_SUMMARY
+          
+          # Job status summary
+          echo "## Job Status" >> $GITHUB_STEP_SUMMARY
+          
+          if [[ "${{ needs.build.result }}" == "success" ]]; then
+            echo "✅ Build & Test: SUCCESS" >> $GITHUB_STEP_SUMMARY
+          else
+            echo "❌ Build & Test: FAILED" >> $GITHUB_STEP_SUMMARY
+          fi
+          
+          if [[ "${{ needs.docker-build-push.result }}" == "success" ]]; then
+            echo "✅ Docker Build & Push: SUCCESS" >> $GITHUB_STEP_SUMMARY
+          else
+            echo "❌ Docker Build & Push: FAILED" >> $GITHUB_STEP_SUMMARY
+          fi
+          
+          if [[ "${{ needs.deploy.result }}" == "success" ]]; then
+            echo "✅ Kubernetes Deployment: SUCCESS" >> $GITHUB_STEP_SUMMARY
+          else
+            echo "❌ Kubernetes Deployment: FAILED" >> $GITHUB_STEP_SUMMARY
+          fi
+          
+          if [[ "${{ needs.post-deploy.result }}" == "success" ]]; then
+            echo "✅ Health Checks: SUCCESS" >> $GITHUB_STEP_SUMMARY
+          elif [[ "${{ needs.post-deploy.result }}" == "failure" ]]; then
+            echo "❌ Health Checks: FAILED" >> $GITHUB_STEP_SUMMARY
+          else
+            echo "⏭️ Health Checks: SKIPPED" >> $GITHUB_STEP_SUMMARY
+          fi
+          
+          # Service URLs (if deployment succeeded)
+          if [[ "${{ needs.deploy.result }}" == "success" ]]; then
+            echo "" >> $GITHUB_STEP_SUMMARY
+            echo "## 🔗 Service URLs" >> $GITHUB_STEP_SUMMARY
+            
+            ENVIRONMENT="${{ needs.setup.outputs.environment }}"
+            DOMAIN="${{ vars.DOMAIN_NAME }}"
+            
+            if [[ "${{ needs.setup.outputs.deploy_frontend }}" == "true" ]]; then
+              echo "- **Frontend:** https://frontend.${ENVIRONMENT}.${DOMAIN}" >> $GITHUB_STEP_SUMMARY
+            fi
+            
+            if [[ "${{ needs.setup.outputs.deploy_backend_api }}" == "true" ]]; then
+              echo "- **Backend API:** https://backend-api.${ENVIRONMENT}.${DOMAIN}" >> $GITHUB_STEP_SUMMARY
+            fi
+            
+            if [[ "${{ needs.setup.outputs.deploy_websocket_server }}" == "true" ]]; then
+              echo "- **WebSocket Server:** https://websocket-server.${ENVIRONMENT}.${DOMAIN}" >> $GITHUB_STEP_SUMMARY
+            fi
+            
+            if [[ "${{ needs.setup.outputs.deploy_ml_service }}" == "true" ]]; then
+              echo "- **ML Service:** https://ml-service.${ENVIRONMENT}.${DOMAIN}" >> $GITHUB_STEP_SUMMARY
+            fi
+          fi
+          
+          # Overall status
+          if [[ "${{ needs.build.result }}" == "success" ]] && \
+             [[ "${{ needs.docker-build-push.result }}" == "success" ]] && \
+             [[ "${{ needs.deploy.result }}" == "success" ]]; then
+            echo "" >> $GITHUB_STEP_SUMMARY
+            echo "## ✅ Deployment Completed Successfully!" >> $GITHUB_STEP_SUMMARY
+          else
+            echo "" >> $GITHUB_STEP_SUMMARY
+            echo "## ❌ Deployment Failed" >> $GITHUB_STEP_SUMMARY
+            echo "Please check the failed jobs above for details." >> $GITHUB_STEP_SUMMARY
+          fi
